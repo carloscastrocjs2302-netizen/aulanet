@@ -1,0 +1,31 @@
+name: Sincronización EduMetrics -> AULAnet
+
+on:
+  schedule:
+    # 08:00 hora Colombia (UTC-5) = 13:00 UTC. Ajusta si quieres otra hora.
+    - cron: '0 13 * * *'
+  workflow_dispatch: {}   # permite correrlo manualmente desde la pestaña Actions
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Ejecutar sincronización
+        env:
+          EDUMETRICS_URL: ${{ secrets.EDUMETRICS_URL }}
+          EDUMETRICS_SERVICE_KEY: ${{ secrets.EDUMETRICS_SERVICE_KEY }}
+          AULANET_URL: ${{ secrets.AULANET_URL }}
+          AULANET_SERVICE_KEY: ${{ secrets.AULANET_SERVICE_KEY }}
+          SYNC_ANIO: ${{ vars.SYNC_ANIO }}
+        run: npm run sync
