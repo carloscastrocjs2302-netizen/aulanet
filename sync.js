@@ -87,8 +87,16 @@ async function cargarCaches() {
   const { data: areas } = await aula.from('an_areas').select('id, nombre');
   (areas || []).forEach(a => cacheAreas.set(a.nombre, a.id));
 
-  const { data: asignaturas } = await aula.from('an_asignaturas').select('id, nombre, area_id');
-  (asignaturas || []).forEach(a => cacheAsignaturas.set(a.area_id + '|' + normalizar(a.nombre), a.id));
+  const { data: asignaturas } = await aula.from('an_asignaturas').select('id, nombre, area_id, nivel');
+  (asignaturas || []).forEach(a => {
+    const clave = normalizar(a.nombre);
+    if (a.nivel === 'ambos') {
+      cacheAsignaturas.set(a.area_id + '|primaria|' + clave, a.id);
+      cacheAsignaturas.set(a.area_id + '|bachillerato|' + clave, a.id);
+    } else {
+      cacheAsignaturas.set(a.area_id + '|' + a.nivel + '|' + clave, a.id);
+    }
+  });
 
   const { data: estudiantes } = await aula.from('an_estudiantes').select('id, edumetrics_id');
   (estudiantes || []).forEach(e => { if (e.edumetrics_id) cacheEstudiantes.set(e.edumetrics_id, e.id); });
@@ -106,22 +114,39 @@ async function asegurarPeriodosYLeerFuente(numerosUsados) {
 // ---------------------------------------------------------------------
 // Consolidación por área + detalle por asignatura donde corresponda
 // ---------------------------------------------------------------------
+// Detecta las filas "envoltorio" que EduMetrics ya guarda como el
+// promedio oficial del área (ej. "ÁREA CIENCIAS NATURALES Y EDUC AMB 11º",
+// "ÁREA TECNOLOGÍA E INFORMÁTICA 6º"). Estas NO deben promediarse junto
+// con las asignaturas específicas — se usan tal cual como nota de área.
+function esEnvoltorio(nombreAsig) {
+  return /^(ÁREA|AREA)\s/i.test(nombreAsig);
+}
+
 function consolidarDetalle(notas, acumuladoNotas, nivelCurso) {
   const asigToArea = {};
+  const envolturaPeriodo = {};   // area -> nota oficial del área (periodo)
+  const envolturaAcum = {};      // area -> nota oficial del área (acumulado)
   const sumaPeriodo = {}; const cuentaPeriodo = {};
-  const porAsignatura = {}; // nombreAsig -> { area, nota_periodo, nota_acumulada }
+  const porAsignatura = {}; // nombreLimpio -> { area, nota_periodo, nota_acumulada }
 
   for (const [asig, v] of Object.entries(notas || {})) {
     const areaAula = AREA_MAP[v.area];
     if (!areaAula) continue;
     asigToArea[asig] = areaAula;
+
+    if (esEnvoltorio(asig)) {
+      envolturaPeriodo[areaAula] = v.nota;
+      continue; // no participa en el promedio ni en el detalle por asignatura
+    }
+
     sumaPeriodo[areaAula] = (sumaPeriodo[areaAula] || 0) + v.nota;
     cuentaPeriodo[areaAula] = (cuentaPeriodo[areaAula] || 0) + 1;
 
     const regla = DESAGREGACION[areaAula];
     const aplica = regla === 'siempre' || (regla === 'bachillerato' && nivelCurso === 'bachillerato');
     if (aplica) {
-      porAsignatura[asig] = { area: areaAula, nota_periodo: v.nota, nota_acumulada: null };
+      const nombreLimpio = asig.replace(/\s+\d{1,2}[°º]$/, '').trim();
+      porAsignatura[nombreLimpio] = { area: areaAula, nota_periodo: v.nota, nota_acumulada: null, claveOriginal: asig };
     }
   }
 
@@ -129,18 +154,25 @@ function consolidarDetalle(notas, acumuladoNotas, nivelCurso) {
   for (const [asig, nota] of Object.entries(acumuladoNotas || {})) {
     const areaAula = asigToArea[asig];
     if (!areaAula) continue;
+    if (esEnvoltorio(asig)) { envolturaAcum[areaAula] = nota; continue; }
     sumaAcum[areaAula] = (sumaAcum[areaAula] || 0) + nota;
     cuentaAcum[areaAula] = (cuentaAcum[areaAula] || 0) + 1;
-    if (porAsignatura[asig]) porAsignatura[asig].nota_acumulada = nota;
+    const nombreLimpio = asig.replace(/\s+\d{1,2}[°º]$/, '').trim();
+    if (porAsignatura[nombreLimpio]) porAsignatura[nombreLimpio].nota_acumulada = nota;
   }
 
   const porArea = {};
-  for (const area of Object.keys(sumaPeriodo)) {
-    porArea[area] = {
-      nota_periodo: Math.round((sumaPeriodo[area] / cuentaPeriodo[area]) * 10) / 10,
-      nota_acumulada: cuentaAcum[area] ? Math.round((sumaAcum[area] / cuentaAcum[area]) * 10) / 10 : null,
-    };
+  const areasVistas = new Set([...Object.keys(sumaPeriodo), ...Object.keys(envolturaPeriodo)]);
+  for (const area of areasVistas) {
+    const notaPeriodo = envolturaPeriodo[area] !== undefined
+      ? envolturaPeriodo[area]
+      : Math.round((sumaPeriodo[area] / cuentaPeriodo[area]) * 10) / 10;
+    const notaAcum = envolturaAcum[area] !== undefined
+      ? envolturaAcum[area]
+      : (cuentaAcum[area] ? Math.round((sumaAcum[area] / cuentaAcum[area]) * 10) / 10 : null);
+    porArea[area] = { nota_periodo: notaPeriodo, nota_acumulada: notaAcum };
   }
+
   return { porArea, porAsignatura };
 }
 
@@ -247,7 +279,7 @@ async function main() {
 
     for (const [asigNombre, valores] of Object.entries(porAsignatura)) {
       const areaId = cacheAreas.get(valores.area);
-      const asignaturaId = cacheAsignaturas.get(areaId + '|' + normalizar(asigNombre));
+      const asignaturaId = cacheAsignaturas.get(areaId + '|' + nivelCurso + '|' + normalizar(asigNombre));
       if (!asignaturaId) continue; // nombre no matchea el catálogo; se ignora en vez de fallar
       filasConsolidadasAsignatura.push({
         estudiante_id: estudianteId, asignatura_id: asignaturaId, periodo_id: periodoInfo.id,
