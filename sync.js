@@ -1,21 +1,20 @@
 // =====================================================================
-// AULANET · SINCRONIZACIÓN CON EDUMETRICS (v2 — con upserts en lotes)
+// AULANET · SINCRONIZACIÓN CON EDUMETRICS (v3)
 // =====================================================================
-// Lee la tabla `resultados` de EduMetrics (notas por estudiante/curso/
-// periodo, en formato JSONB por asignatura), consolida por ÁREA y las
-// guarda en AULAnet (an_estudiantes + an_resultados_consolidados).
-// Se ejecuta diariamente vía GitHub Actions.
-//
-// v2: los estudiantes y los resultados se guardan en LOTES PARALELOS
-// (como en el sync de EduMetrics) en vez de fila por fila, para que la
-// carga inicial masiva no tome decenas de minutos.
+// Novedades sobre v2:
+//   - Respeta la fuente de datos configurada por el administrador en
+//     an_periodos.fuente_datos ('original' | 'post_nivelacion'). Cuando
+//     un periodo está en post_nivelacion, fusiona por código de
+//     estudiante: la fila con tipo='nivelacion' tiene prioridad sobre
+//     la fila normal de ese mismo periodo.
+//   - Guarda además el detalle por asignatura en
+//     an_resultados_por_asignatura para Educación Artística (siempre) y
+//     para Ciencias Naturales / Tecnología (solo en cursos de
+//     bachillerato), tal como se definió en el diseño.
 // =====================================================================
 
 import { createClient } from '@supabase/supabase-js';
 
-// ---------------------------------------------------------------------
-// Configuración
-// ---------------------------------------------------------------------
 const EDUMETRICS_URL = process.env.EDUMETRICS_URL;
 const EDUMETRICS_SERVICE_KEY = process.env.EDUMETRICS_SERVICE_KEY;
 const AULANET_URL = process.env.AULANET_URL;
@@ -30,9 +29,6 @@ if (!EDUMETRICS_URL || !EDUMETRICS_SERVICE_KEY || !AULANET_URL || !AULANET_SERVI
 const edu = createClient(EDUMETRICS_URL, EDUMETRICS_SERVICE_KEY);
 const aula = createClient(AULANET_URL, AULANET_SERVICE_KEY);
 
-// ---------------------------------------------------------------------
-// Mapas de traducción EduMetrics -> AULAnet
-// ---------------------------------------------------------------------
 const AREA_MAP = {
   'EDUCACIÓN FÍSICA':      'Educación Física',
   'PROFUNDIZACIÓN':        'Profundización',
@@ -48,11 +44,15 @@ const AREA_MAP = {
   'CIENCIAS ECONÓMICAS':    'Ciencias Económicas',
 };
 
-const PERIODO_NUM = {
-  'Primer Periodo': 1, 'Segundo Periodo': 2, 'Tercer Periodo': 3, 'Cuarto Periodo': 4,
-};
-const PERIODO_NOMBRE_INFORME = {
-  1: 'PRIMER PERIODO', 2: 'SEGUNDO PERIODO', 3: 'TERCER PERIODO', 4: 'CUARTO PERIODO',
+const PERIODO_NUM = { 'Primer Periodo': 1, 'Segundo Periodo': 2, 'Tercer Periodo': 3, 'Cuarto Periodo': 4 };
+const PERIODO_NOMBRE_INFORME = { 1: 'PRIMER PERIODO', 2: 'SEGUNDO PERIODO', 3: 'TERCER PERIODO', 4: 'CUARTO PERIODO' };
+
+// Áreas que se desagregan por asignatura. 'siempre' = primaria y
+// bachillerato; 'bachillerato' = solo cursos de nivel bachillerato.
+const DESAGREGACION = {
+  'Educación Artística': 'siempre',
+  'Ciencias Naturales':  'bachillerato',
+  'Tecnología':          'bachillerato',
 };
 
 function normalizar(str) {
@@ -63,65 +63,66 @@ function normalizar(str) {
     .trim();
 }
 
-// Ejecuta un arreglo de "tareas" (funciones que devuelven promesas) en
-// lotes paralelos, para no disparar miles de requests simultáneas ni
-// hacerlas todas secuenciales.
-async function enLotesParalelos(items, tamanoLote, fn) {
-  const resultados = [];
-  for (let i = 0; i < items.length; i += tamanoLote) {
-    const lote = items.slice(i, i + tamanoLote);
-    const r = await Promise.all(lote.map(fn));
-    resultados.push(...r);
+async function enLotesParalelos(items, tamanoLote, concurrencia, fn) {
+  const lotes = Array.from({ length: Math.ceil(items.length / tamanoLote) }, (_, i) => items.slice(i * tamanoLote, (i + 1) * tamanoLote));
+  for (let i = 0; i < lotes.length; i += concurrencia) {
+    await Promise.all(lotes.slice(i, i + concurrencia).map(fn));
   }
-  return resultados;
 }
 
 // ---------------------------------------------------------------------
 // Cachés
 // ---------------------------------------------------------------------
-const cacheCursos = new Map();
-const cacheAreas = new Map();
-const cachePeriodos = new Map();
-const cacheEstudiantes = new Map();
+const cacheCursos = new Map();       // nombre_normalizado -> curso_id
+const cacheCursoNivel = new Map();   // curso_id -> 'primaria' | 'bachillerato'
+const cacheAreas = new Map();        // nombre AULAnet -> area_id
+const cachePeriodos = new Map();     // numero -> { id, fuente_datos }
+const cacheEstudiantes = new Map();  // codigo -> estudiante_id
+const cacheAsignaturas = new Map();  // area_id|nombre_normalizado -> asignatura_id
 
 async function cargarCaches() {
-  const { data: cursos } = await aula.from('an_cursos').select('id, nombre');
-  (cursos || []).forEach(c => cacheCursos.set(normalizar(c.nombre), c.id));
+  const { data: cursos } = await aula.from('an_cursos').select('id, nombre, nivel');
+  (cursos || []).forEach(c => { cacheCursos.set(normalizar(c.nombre), c.id); cacheCursoNivel.set(c.id, c.nivel); });
 
   const { data: areas } = await aula.from('an_areas').select('id, nombre');
   (areas || []).forEach(a => cacheAreas.set(a.nombre, a.id));
 
-  const { data: periodos } = await aula.from('an_periodos').select('id, anio, numero');
-  (periodos || []).forEach(p => cachePeriodos.set(`${p.anio}-${p.numero}`, p.id));
+  const { data: asignaturas } = await aula.from('an_asignaturas').select('id, nombre, area_id');
+  (asignaturas || []).forEach(a => cacheAsignaturas.set(a.area_id + '|' + normalizar(a.nombre), a.id));
 
   const { data: estudiantes } = await aula.from('an_estudiantes').select('id, edumetrics_id');
   (estudiantes || []).forEach(e => { if (e.edumetrics_id) cacheEstudiantes.set(e.edumetrics_id, e.id); });
 }
 
-async function asegurarPeriodos(numerosUsados) {
+async function asegurarPeriodosYLeerFuente(numerosUsados) {
   for (const numero of numerosUsados) {
-    const key = `${SYNC_ANIO}-${numero}`;
-    if (cachePeriodos.has(key)) continue;
-    const { data, error } = await aula.from('an_periodos')
-      .upsert({ anio: SYNC_ANIO, numero, nombre_informe: PERIODO_NOMBRE_INFORME[numero] }, { onConflict: 'anio,numero' })
-      .select('id').single();
-    if (error) throw error;
-    cachePeriodos.set(key, data.id);
+    await aula.from('an_periodos')
+      .upsert({ anio: SYNC_ANIO, numero, nombre_informe: PERIODO_NOMBRE_INFORME[numero] }, { onConflict: 'anio,numero' });
   }
+  const { data: periodos } = await aula.from('an_periodos').select('id, numero, fuente_datos').eq('anio', SYNC_ANIO);
+  (periodos || []).forEach(p => cachePeriodos.set(p.numero, { id: p.id, fuente_datos: p.fuente_datos }));
 }
 
 // ---------------------------------------------------------------------
-// Consolidación de notas por área
+// Consolidación por área + detalle por asignatura donde corresponda
 // ---------------------------------------------------------------------
-function consolidarPorArea(notas, acumuladoNotas) {
+function consolidarDetalle(notas, acumuladoNotas, nivelCurso) {
   const asigToArea = {};
   const sumaPeriodo = {}; const cuentaPeriodo = {};
+  const porAsignatura = {}; // nombreAsig -> { area, nota_periodo, nota_acumulada }
+
   for (const [asig, v] of Object.entries(notas || {})) {
     const areaAula = AREA_MAP[v.area];
     if (!areaAula) continue;
     asigToArea[asig] = areaAula;
     sumaPeriodo[areaAula] = (sumaPeriodo[areaAula] || 0) + v.nota;
     cuentaPeriodo[areaAula] = (cuentaPeriodo[areaAula] || 0) + 1;
+
+    const regla = DESAGREGACION[areaAula];
+    const aplica = regla === 'siempre' || (regla === 'bachillerato' && nivelCurso === 'bachillerato');
+    if (aplica) {
+      porAsignatura[asig] = { area: areaAula, nota_periodo: v.nota, nota_acumulada: null };
+    }
   }
 
   const sumaAcum = {}; const cuentaAcum = {};
@@ -130,16 +131,17 @@ function consolidarPorArea(notas, acumuladoNotas) {
     if (!areaAula) continue;
     sumaAcum[areaAula] = (sumaAcum[areaAula] || 0) + nota;
     cuentaAcum[areaAula] = (cuentaAcum[areaAula] || 0) + 1;
+    if (porAsignatura[asig]) porAsignatura[asig].nota_acumulada = nota;
   }
 
-  const resultado = {};
+  const porArea = {};
   for (const area of Object.keys(sumaPeriodo)) {
-    resultado[area] = {
+    porArea[area] = {
       nota_periodo: Math.round((sumaPeriodo[area] / cuentaPeriodo[area]) * 10) / 10,
       nota_acumulada: cuentaAcum[area] ? Math.round((sumaAcum[area] / cuentaAcum[area]) * 10) / 10 : null,
     };
   }
-  return resultado;
+  return { porArea, porAsignatura };
 }
 
 // ---------------------------------------------------------------------
@@ -149,13 +151,13 @@ async function main() {
   console.log(`Iniciando sincronización EduMetrics → AULAnet | año=${SYNC_ANIO}`);
   await cargarCaches();
 
-  // 1) Traer todas las filas de EduMetrics para el año, paginado
+  // 1) Traer TODAS las filas del año (incluye tipo normal y tipo='nivelacion')
   const filas = [];
   const PAGE = 1000;
   let from = 0;
   while (true) {
     const { data: rows, error } = await edu.from('resultados')
-      .select('año, periodo, grado, curso, codigo, estudiante, notas, acumulado')
+      .select('año, periodo, tipo, grado, curso, codigo, estudiante, notas, acumulado')
       .eq('año', SYNC_ANIO)
       .range(from, from + PAGE - 1);
     if (error) throw error;
@@ -166,110 +168,123 @@ async function main() {
   }
   console.log(`Filas leídas de EduMetrics: ${filas.length}`);
 
-  // 2) Detectar periodos usados y asegurarlos (secuencial, son máximo 4)
   const numerosUsados = new Set(filas.map(r => PERIODO_NUM[r.periodo]).filter(Boolean));
-  await asegurarPeriodos(numerosUsados);
+  await asegurarPeriodosYLeerFuente(numerosUsados);
 
-  // 3) Armar el conjunto único de estudiantes (dedupe por código) cuyo
-  //    curso SÍ existe en AULAnet, y upsertarlos en LOTES PARALELOS
-  const cursosFaltantes = new Set();
-  const estudiantesUnicos = new Map(); // codigo -> {codigo, nombre, cursoId}
+  // 2) Agrupar por periodo -> por tipo -> por código (normal vs nivelación)
+  const porPeriodo = new Map(); // numero -> { normal: Map(codigo->row), nivelacion: Map(codigo->row) }
   for (const row of filas) {
-    if (!row.codigo) continue;
+    const numero = PERIODO_NUM[row.periodo];
+    if (!numero || !row.codigo) continue;
+    if (!porPeriodo.has(numero)) porPeriodo.set(numero, { normal: new Map(), nivelacion: new Map() });
+    const bucket = row.tipo === 'nivelacion' ? 'nivelacion' : 'normal';
+    porPeriodo.get(numero)[bucket].set(row.codigo, row);
+  }
+
+  // 3) Resolver la fila "efectiva" por estudiante según fuente_datos del periodo
+  const filasEfectivas = []; // { numero, row }
+  for (const [numero, { normal, nivelacion }] of porPeriodo.entries()) {
+    const periodoInfo = cachePeriodos.get(numero);
+    const usarNivelacion = periodoInfo?.fuente_datos === 'post_nivelacion';
+    for (const [codigo, rowNormal] of normal.entries()) {
+      const row = (usarNivelacion && nivelacion.has(codigo)) ? nivelacion.get(codigo) : rowNormal;
+      filasEfectivas.push({ numero, row });
+    }
+    // estudiantes que SOLO tienen fila de nivelación (caso raro, por si acaso)
+    if (usarNivelacion) {
+      for (const [codigo, rowNiv] of nivelacion.entries()) {
+        if (!normal.has(codigo)) filasEfectivas.push({ numero, row: rowNiv });
+      }
+    }
+  }
+  console.log(`Filas efectivas tras aplicar fuente de datos por periodo: ${filasEfectivas.length}`);
+
+  // 4) Estudiantes únicos con curso válido -> upsert en lotes
+  const cursosFaltantes = new Set();
+  const estudiantesUnicos = new Map();
+  for (const { row } of filasEfectivas) {
     const cursoId = cacheCursos.get(normalizar(row.curso));
     if (!cursoId) { cursosFaltantes.add(row.curso); continue; }
     if (!estudiantesUnicos.has(row.codigo)) {
       estudiantesUnicos.set(row.codigo, { codigo: row.codigo, nombre: row.estudiante, cursoId });
     }
   }
-
   const nuevos = [...estudiantesUnicos.values()].filter(e => !cacheEstudiantes.has(e.codigo));
-  console.log(`Estudiantes únicos: ${estudiantesUnicos.size} (nuevos por crear/actualizar: ${nuevos.length})`);
+  console.log(`Estudiantes únicos: ${estudiantesUnicos.size} (nuevos/actualizar: ${nuevos.length})`);
 
-  const LOTE = 500;
-  await enLotesParalelos(
-    Array.from({ length: Math.ceil(nuevos.length / LOTE) }, (_, i) => nuevos.slice(i * LOTE, (i + 1) * LOTE)),
-    5, // hasta 5 lotes de 500 en paralelo
-    async (lote) => {
-      const payload = lote.map(e => ({
-        edumetrics_id: e.codigo,
-        nombre_completo: e.nombre,
-        nombre_normalizado: normalizar(e.nombre),
-        curso_id: e.cursoId,
-        origen: 'sync_edumetrics',
-      }));
-      const { data, error } = await aula.from('an_estudiantes')
-        .upsert(payload, { onConflict: 'edumetrics_id' })
-        .select('id, edumetrics_id');
-      if (error) { console.error('Error en lote de estudiantes:', error.message); return; }
-      (data || []).forEach(e => cacheEstudiantes.set(e.edumetrics_id, e.id));
-    }
-  );
+  await enLotesParalelos(nuevos, 500, 5, async (lote) => {
+    const payload = lote.map(e => ({
+      edumetrics_id: e.codigo, nombre_completo: e.nombre, nombre_normalizado: normalizar(e.nombre),
+      curso_id: e.cursoId, origen: 'sync_edumetrics',
+    }));
+    const { data, error } = await aula.from('an_estudiantes').upsert(payload, { onConflict: 'edumetrics_id' }).select('id, edumetrics_id');
+    if (error) { console.error('Error en lote de estudiantes:', error.message); return; }
+    (data || []).forEach(e => cacheEstudiantes.set(e.edumetrics_id, e.id));
+  });
 
-  // 4) Consolidar resultados por área y upsertarlos en lotes paralelos
-  const rowsAConsolidar = [];
-  for (const row of filas) {
-    const numero = PERIODO_NUM[row.periodo];
-    if (!numero) continue;
+  // 5) Consolidar por área y por asignatura
+  const filasConsolidadasArea = [];
+  const filasConsolidadasAsignatura = [];
+
+  for (const { numero, row } of filasEfectivas) {
     const estudianteId = cacheEstudiantes.get(row.codigo);
-    if (!estudianteId) continue; // curso faltante u otro problema, ya reportado
-    const periodoId = cachePeriodos.get(`${SYNC_ANIO}-${numero}`);
-    const porArea = consolidarPorArea(row.notas, row.acumulado?.notas);
+    if (!estudianteId) continue;
+    const periodoInfo = cachePeriodos.get(numero);
+    const cursoId = cacheCursos.get(normalizar(row.curso));
+    const nivelCurso = cacheCursoNivel.get(cursoId);
+
+    const { porArea, porAsignatura } = consolidarDetalle(row.notas, row.acumulado?.notas, nivelCurso);
 
     for (const [areaNombre, valores] of Object.entries(porArea)) {
       const areaId = cacheAreas.get(areaNombre);
       if (!areaId) continue;
-      rowsAConsolidar.push({
-        estudiante_id: estudianteId,
-        area_id: areaId,
-        periodo_id: periodoId,
-        nota_periodo: valores.nota_periodo,
-        nota_acumulada: valores.nota_acumulada,
+      filasConsolidadasArea.push({
+        estudiante_id: estudianteId, area_id: areaId, periodo_id: periodoInfo.id,
+        nota_periodo: valores.nota_periodo, nota_acumulada: valores.nota_acumulada,
+        sincronizado_en: new Date().toISOString(),
+      });
+    }
+
+    for (const [asigNombre, valores] of Object.entries(porAsignatura)) {
+      const areaId = cacheAreas.get(valores.area);
+      const asignaturaId = cacheAsignaturas.get(areaId + '|' + normalizar(asigNombre));
+      if (!asignaturaId) continue; // nombre no matchea el catálogo; se ignora en vez de fallar
+      filasConsolidadasAsignatura.push({
+        estudiante_id: estudianteId, asignatura_id: asignaturaId, periodo_id: periodoInfo.id,
+        nota_periodo: valores.nota_periodo, nota_acumulada: valores.nota_acumulada,
         sincronizado_en: new Date().toISOString(),
       });
     }
   }
-  console.log(`Filas consolidadas a guardar: ${rowsAConsolidar.length}`);
+  console.log(`Consolidados por área: ${filasConsolidadasArea.length} | por asignatura: ${filasConsolidadasAsignatura.length}`);
 
   let errores = 0;
-  const lotesConsolidados = Array.from(
-    { length: Math.ceil(rowsAConsolidar.length / LOTE) },
-    (_, i) => rowsAConsolidar.slice(i * LOTE, (i + 1) * LOTE)
-  );
-  await enLotesParalelos(lotesConsolidados, 5, async (lote) => {
-    const { error } = await aula.from('an_resultados_consolidados')
-      .upsert(lote, { onConflict: 'estudiante_id,area_id,periodo_id' });
-    if (error) { console.error('Error en lote de consolidados:', error.message); errores++; }
+  await enLotesParalelos(filasConsolidadasArea, 500, 5, async (lote) => {
+    const { error } = await aula.from('an_resultados_consolidados').upsert(lote, { onConflict: 'estudiante_id,area_id,periodo_id' });
+    if (error) { console.error('Error en lote de consolidados por área:', error.message); errores++; }
+  });
+  await enLotesParalelos(filasConsolidadasAsignatura, 500, 5, async (lote) => {
+    const { error } = await aula.from('an_resultados_por_asignatura').upsert(lote, { onConflict: 'estudiante_id,asignatura_id,periodo_id' });
+    if (error) { console.error('Error en lote de consolidados por asignatura:', error.message); errores++; }
   });
 
   if (cursosFaltantes.size > 0) {
-    console.warn('⚠️  Cursos de EduMetrics sin equivalente en an_cursos (no se sincronizaron sus estudiantes):');
+    console.warn('⚠️  Cursos de EduMetrics sin equivalente en an_cursos:');
     console.warn('   ' + [...cursosFaltantes].join(', '));
   }
 
   const estado = errores > 0 ? 'con_errores' : 'exitoso';
   const detalle = `filas_leidas=${filas.length}, estudiantes=${estudiantesUnicos.size}, ` +
-                   `filas_consolidadas=${rowsAConsolidar.length}, cursos_faltantes=${cursosFaltantes.size}` +
-                   (cursosFaltantes.size ? ' (' + [...cursosFaltantes].join('; ') + ')' : '');
+                   `consolidados_area=${filasConsolidadasArea.length}, consolidados_asignatura=${filasConsolidadasAsignatura.length}, ` +
+                   `cursos_faltantes=${cursosFaltantes.size}` + (cursosFaltantes.size ? ' (' + [...cursosFaltantes].join('; ') + ')' : '');
 
-  await aula.from('an_sync_log').insert({
-    filas_sincronizadas: rowsAConsolidar.length,
-    estado,
-    detalle,
-  });
-
+  await aula.from('an_sync_log').insert({ filas_sincronizadas: filasConsolidadasArea.length, estado, detalle });
   console.log(`Listo. ${detalle}`);
   if (errores > 0) process.exit(1);
 }
 
 main().catch(async (err) => {
   console.error('Fallo la sincronización:', err.message);
-  try {
-    await aula.from('an_sync_log').insert({
-      filas_sincronizadas: 0,
-      estado: 'fallido',
-      detalle: err.message,
-    });
-  } catch (_) {}
+  try { await aula.from('an_sync_log').insert({ filas_sincronizadas: 0, estado: 'fallido', detalle: err.message }); } catch (_) {}
   process.exit(1);
 });
