@@ -55,6 +55,11 @@ const VistaDashboardAdmin = {
             <p id="mensajeEst" class="texto-muted" style="margin:8px 0;"></p>
             <button id="btnAgregarEst" class="btn-primario">Agregar estudiante</button>
           </div>
+
+          <p class="titulo-lista" style="margin-top:24px;">Explorar cualquier curso</p>
+          <select id="selectCursoExplorar" style="margin-bottom:10px;"></select>
+          <input type="text" id="buscarEstudianteAdmin" placeholder="Buscar estudiante..." style="margin-bottom:10px; display:none;" />
+          <div id="listaEstudiantesAdmin" class="lista-novedades"><p class="texto-muted" style="padding:14px;">Elige un curso para ver sus estudiantes.</p></div>
         </main>
       </div>`;
 
@@ -88,10 +93,55 @@ const VistaDashboardAdmin = {
 
       const select = document.getElementById('selectCursoEst');
       select.innerHTML = (cursos || []).map(c => `<option value="${c.id}">${escapeHtml(c.nombre)}</option>`).join('');
+
+      this.cursos = cursos || [];
+      const selectExplorar = document.getElementById('selectCursoExplorar');
+      selectExplorar.innerHTML = '<option value="">Selecciona un curso...</option>' +
+        this.cursos.map(c => `<option value="${c.id}">${escapeHtml(c.nombre)}</option>`).join('');
+      selectExplorar.addEventListener('change', (ev) => this.cargarEstudiantesDeCurso(ev.target.value));
     } catch (e) {
       console.error(e);
       document.getElementById('infoDocentes').textContent = 'No pudimos cargar los docentes.';
     }
+  },
+
+  async cargarEstudiantesDeCurso(cursoId) {
+    const contenedor = document.getElementById('listaEstudiantesAdmin');
+    const buscador = document.getElementById('buscarEstudianteAdmin');
+    if (!cursoId) { contenedor.innerHTML = '<p class="texto-muted" style="padding:14px;">Elige un curso para ver sus estudiantes.</p>'; buscador.style.display = 'none'; return; }
+
+    contenedor.innerHTML = '<p class="texto-muted" style="padding:14px;">Cargando...</p>';
+    const { data: estudiantes, error } = await sb.from('an_estudiantes').select('id, nombre_completo').eq('curso_id', cursoId).order('nombre_completo');
+    if (error) { contenedor.innerHTML = '<p class="texto-muted" style="padding:14px;">Error al cargar.</p>'; return; }
+
+    this.estudiantesExplorados = estudiantes || [];
+    this.cursoExplorado = this.cursos.find(c => c.id === cursoId);
+    buscador.style.display = 'block';
+    buscador.oninput = (ev) => {
+      const q = normalizar(ev.target.value);
+      const filtrados = !q ? this.estudiantesExplorados : this.estudiantesExplorados.filter(e => normalizar(e.nombre_completo).includes(q));
+      this.pintarListaExplorada(filtrados);
+    };
+    this.pintarListaExplorada(this.estudiantesExplorados);
+  },
+
+  pintarListaExplorada(lista) {
+    const contenedor = document.getElementById('listaEstudiantesAdmin');
+    if (lista.length === 0) { contenedor.innerHTML = '<p class="texto-muted" style="padding:14px;">Sin resultados.</p>'; return; }
+
+    contenedor.innerHTML = lista.map(e => `
+      <div class="fila-estudiante-lista" data-id="${e.id}">
+        <span>${escapeHtml(e.nombre_completo)}</span>
+        <i class="ti ti-chevron-right" aria-hidden="true" style="color:var(--texto-muted);"></i>
+      </div>`).join('');
+
+    contenedor.querySelectorAll('.fila-estudiante-lista').forEach(fila => {
+      fila.addEventListener('click', () => {
+        const estudiante = this.estudiantesExplorados.find(e => e.id === fila.dataset.id);
+        estudiante.curso_id = this.cursoExplorado.id;
+        VistaFichaEstudiante.render(this.contenedor, this.perfil, estudiante, () => this.render(this.contenedor, this.perfil));
+      });
+    });
   },
 
   pintarListaDocentes(lista) {
