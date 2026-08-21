@@ -65,6 +65,9 @@ const App = {
       case 'coordinador_area':
         VistaDashboardCoordinadorArea.render(this.contenedor, perfil);
         break;
+      case 'administrador':
+        VistaDashboardAdmin.render(this.contenedor, perfil);
+        break;
       default:
         this.contenedor.innerHTML = `
           <div class="pantalla-proximamente">
