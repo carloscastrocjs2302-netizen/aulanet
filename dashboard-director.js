@@ -51,6 +51,10 @@ const VistaDashboardDirector = {
 
           <p class="titulo-lista">Novedades recientes</p>
           <div id="listaNovedades" class="lista-novedades"><p class="texto-muted">Cargando...</p></div>
+
+          <p class="titulo-lista" style="margin-top:24px;">Estudiantes del curso</p>
+          <input type="text" id="buscarEstudiante" placeholder="Buscar estudiante..." style="margin-bottom:10px;" />
+          <div id="listaEstudiantesCurso" class="lista-novedades"><p class="texto-muted">Cargando...</p></div>
         </main>
       </div>`;
 
@@ -144,9 +148,36 @@ const VistaDashboardDirector = {
         ? filasNovedades.join('')
         : '<p class="texto-muted">No hay novedades pendientes en este curso.</p>';
 
+      this.estudiantesCurso = estudiantes || [];
+      this.pintarListaEstudiantes(this.estudiantesCurso);
+      document.getElementById('buscarEstudiante').oninput = (ev) => {
+        const q = normalizar(ev.target.value);
+        const filtrados = !q ? this.estudiantesCurso : this.estudiantesCurso.filter(e => normalizar(e.nombre_completo).includes(q));
+        this.pintarListaEstudiantes(filtrados);
+      };
+
     } catch (e) {
       console.error(e);
       document.getElementById('infoCursoActivo').textContent = 'No pudimos cargar la información de este curso.';
     }
+  },
+
+  pintarListaEstudiantes(lista) {
+    const contenedor = document.getElementById('listaEstudiantesCurso');
+    if (lista.length === 0) { contenedor.innerHTML = '<p class="texto-muted" style="padding:14px;">Sin resultados.</p>'; return; }
+
+    contenedor.innerHTML = lista.map(e => `
+      <div class="fila-estudiante-lista" data-id="${e.id}">
+        <span>${escapeHtml(e.nombre_completo)}</span>
+        <i class="ti ti-chevron-right" aria-hidden="true" style="color:var(--texto-muted);"></i>
+      </div>`).join('');
+
+    contenedor.querySelectorAll('.fila-estudiante-lista').forEach(fila => {
+      fila.addEventListener('click', () => {
+        const estudiante = this.estudiantesCurso.find(e => e.id === fila.dataset.id) || { id: fila.dataset.id, curso_id: this.cursoActivoId };
+        estudiante.curso_id = this.cursoActivoId;
+        VistaFichaEstudiante.render(this.contenedor, this.perfil, estudiante, () => this.cargarDatosCurso());
+      });
+    });
   },
 };
