@@ -12,6 +12,8 @@ const APP_SHELL = [
   './login.js',
   './primer-ingreso.js',
   './dashboard-director.js',
+  './dashboard-coordinador-area.js',
+  './carga-excel.js',
 ];
 
 self.addEventListener('install', (event) => {
