@@ -13,6 +13,7 @@ const APP_SHELL = [
   './primer-ingreso.js',
   './dashboard-director.js',
   './dashboard-coordinador-area.js',
+  './dashboard-admin.js',
   './carga-excel.js',
 ];
 
