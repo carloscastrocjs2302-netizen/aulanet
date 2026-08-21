@@ -1,4 +1,4 @@
-const CACHE_NAME = 'aulanet-v2';
+const CACHE_NAME = 'aulanet-v3';
 const APP_SHELL = [
   './',
   './index.html',
@@ -12,6 +12,8 @@ const APP_SHELL = [
   './login.js',
   './primer-ingreso.js',
   './dashboard-director.js',
+  './ficha-estudiante.js',
+  './informe-pdf.js',
   './dashboard-coordinador-area.js',
   './dashboard-admin.js',
   './carga-excel.js',
