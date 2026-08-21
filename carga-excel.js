@@ -269,12 +269,26 @@ const VistaCargaExcel = {
     const pendientes = this.alertas.filter(a => !a.resuelta).length;
     if (this.filasResueltas.length === 0) { zona.style.display = 'none'; return; }
 
+    const { filas: filasUnicas, duplicadas } = this.deduplicarFilas();
+
     zona.style.display = 'block';
-    document.getElementById('resumenGuardar').textContent = pendientes > 0
-      ? `${pendientes} alertas sin resolver — puedes guardar igual, esas filas quedarán pendientes.`
-      : `Listo para guardar ${this.filasResueltas.length} observaciones.`;
+    const partes = [`${filasUnicas.length} observaciones distintas listas para guardar`];
+    if (duplicadas > 0) partes.push(`${duplicadas} filas duplicadas del mismo estudiante+asignatura se combinaron en una sola`);
+    if (pendientes > 0) partes.push(`${pendientes} alertas sin resolver quedarán pendientes`);
+    document.getElementById('resumenGuardar').textContent = partes.join(' · ');
 
     document.getElementById('btnGuardar').onclick = () => this.guardarTodo();
+  },
+
+  // Postgres no permite que un mismo lote de upsert toque la misma llave
+  // (estudiante+asignatura+periodo) dos veces — si el Excel trae al mismo
+  // estudiante repetido, nos quedamos con la última observación.
+  deduplicarFilas() {
+    const mapa = new Map();
+    for (const f of this.filasResueltas) {
+      mapa.set(`${f.estudiante_id}|${f.asignatura_id}`, f);
+    }
+    return { filas: [...mapa.values()], duplicadas: this.filasResueltas.length - mapa.size };
   },
 
   async guardarTodo() {
@@ -282,29 +296,37 @@ const VistaCargaExcel = {
     boton.disabled = true;
     boton.textContent = 'Guardando...';
 
+    const { filas: filasUnicas } = this.deduplicarFilas();
+    console.log('AULAnet: filas a guardar (distintas):', filasUnicas.length, 'de', this.filasResueltas.length, 'totales resueltas');
+
     try {
       const { data: carga, error: errCarga } = await sb.from('an_cargas').insert({
         coordinador_id: this.perfil.id, area_id: this.areaId, archivo_nombre: 'excel_cargado.xlsx',
-        periodo_id: this.periodoId, total_filas: this.filasResueltas.length,
+        periodo_id: this.periodoId, total_filas: filasUnicas.length,
         total_alertas: this.alertas.length, estado: 'completado',
       }).select('id').single();
       if (errCarga) throw errCarga;
 
-      const filasConCarga = this.filasResueltas.map(f => ({ ...f, periodo_id: this.periodoId, carga_id: carga.id }));
+      const filasConCarga = filasUnicas.map(f => ({ ...f, periodo_id: this.periodoId, carga_id: carga.id }));
       const LOTE = 300;
+      let guardadas = 0;
       for (let i = 0; i < filasConCarga.length; i += LOTE) {
         const lote = filasConCarga.slice(i, i + LOTE);
-        const { error } = await sb.from('an_observaciones').upsert(lote, { onConflict: 'estudiante_id,asignatura_id,periodo_id' });
-        if (error) throw error;
+        const { data: insertadas, error } = await sb.from('an_observaciones')
+          .upsert(lote, { onConflict: 'estudiante_id,asignatura_id,periodo_id' })
+          .select('id');
+        if (error) { console.error('AULAnet: error en lote', i, error); throw error; }
+        guardadas += insertadas?.length || 0;
+        console.log(`AULAnet: lote ${i}-${i + lote.length} guardado, ${insertadas?.length} filas confirmadas por Supabase`);
       }
 
-      document.getElementById('mensajeProceso').textContent = `✓ ${filasConCarga.length} observaciones guardadas correctamente.`;
+      document.getElementById('mensajeProceso').textContent = `✓ ${guardadas} observaciones guardadas correctamente (Supabase confirmó ${guardadas} de ${filasConCarga.length} enviadas).`;
       boton.textContent = 'Guardado';
     } catch (e) {
-      console.error(e);
+      console.error('AULAnet: fallo guardando observaciones', e);
       boton.disabled = false;
       boton.textContent = 'Guardar observaciones';
-      document.getElementById('mensajeProceso').textContent = 'Ocurrió un error guardando. Intenta de nuevo.';
+      document.getElementById('mensajeProceso').textContent = 'Ocurrió un error guardando: ' + (e.message || 'revisa la consola (F12)');
     }
   },
 };
