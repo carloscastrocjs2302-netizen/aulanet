@@ -88,6 +88,38 @@ const VistaCargaExcel = {
     return lista;
   },
 
+  encontrarAsignatura(nombreHoja) {
+    const normHoja = normalizar(nombreHoja);
+    if (this.cacheAsignaturas.has(normHoja)) return this.cacheAsignaturas.get(normHoja);
+    for (const [nombreNorm, asig] of this.cacheAsignaturas.entries()) {
+      if (nombreNorm.includes(normHoja) || normHoja.includes(nombreNorm)) return asig;
+    }
+    return null;
+  },
+
+  extraerFila(fila) {
+    const CLAVES_NOMBRE = ['Nombre', 'NOMBRE', 'nombre', 'Estudiante', 'ESTUDIANTE', 'estudiante'];
+    const CLAVES_CURSO = ['Curso', 'CURSO', 'curso', 'Grupo', 'GRUPO', 'grupo'];
+    const CLAVES_OBS = ['Observación', 'OBSERVACIÓN', 'observacion', 'Observacion', 'OBSERVACION'];
+
+    const claveNombre = CLAVES_NOMBRE.find(k => fila[k] !== undefined);
+    const claveCurso = CLAVES_CURSO.find(k => fila[k] !== undefined);
+    let claveObs = CLAVES_OBS.find(k => fila[k] !== undefined);
+
+    if (!claveObs) {
+      // si no hay una columna con nombre estándar de observación, se toma la
+      // primera columna que no sea ni el nombre ni el curso (ej. la columna
+      // se llama igual que la asignatura, como "Tecnología")
+      claveObs = Object.keys(fila).find(k => k !== claveNombre && k !== claveCurso);
+    }
+
+    return {
+      nombre: String(fila[claveNombre] ?? '').trim(),
+      curso: String(fila[claveCurso] ?? '').trim(),
+      observacion: String(fila[claveObs] ?? '').trim(),
+    };
+  },
+
   async procesarArchivo(archivo) {
     if (!archivo || !this.periodoId) return;
     document.getElementById('mensajeProceso').textContent = 'Leyendo el archivo...';
@@ -98,16 +130,14 @@ const VistaCargaExcel = {
     let totalFilas = 0;
 
     for (const nombreHoja of libro.SheetNames) {
-      const asignatura = this.cacheAsignaturas.get(normalizar(nombreHoja));
+      const asignatura = this.encontrarAsignatura(nombreHoja);
       if (!asignatura) continue; // hoja que no corresponde a ninguna asignatura del área, se ignora
 
       const hoja = libro.Sheets[nombreHoja];
       const filas = XLSX.utils.sheet_to_json(hoja, { defval: '' });
 
-      for (const fila of filas) {
-        const nombreExcel = String(fila['Nombre'] ?? fila['NOMBRE'] ?? fila['nombre'] ?? '').trim();
-        const cursoExcel = String(fila['Curso'] ?? fila['CURSO'] ?? fila['curso'] ?? '').trim();
-        const observacion = String(fila['Observación'] ?? fila['OBSERVACIÓN'] ?? fila['observacion'] ?? fila['Observacion'] ?? '').trim();
+      for (const filaCruda of filas) {
+        const { nombre: nombreExcel, curso: cursoExcel, observacion } = this.extraerFila(filaCruda);
         if (!nombreExcel || !cursoExcel) continue;
         totalFilas++;
 
@@ -137,7 +167,7 @@ const VistaCargaExcel = {
       }
 
       // Estudiantes del curso(s) tocado(s) en esta hoja que no aparecieron -> alerta de faltante
-      const cursosEnHoja = new Set(filas.map(f => normalizar(String(f['Curso'] ?? f['CURSO'] ?? f['curso'] ?? ''))).filter(Boolean));
+      const cursosEnHoja = new Set(filas.map(f => normalizar(this.extraerFila(f).curso)).filter(Boolean));
       for (const cursoNorm of cursosEnHoja) {
         const curso = this.cacheCursos.get(cursoNorm);
         if (!curso) continue;
