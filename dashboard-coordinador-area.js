@@ -31,6 +31,7 @@ const VistaDashboardCoordinadorArea = {
           <p class="logo-texto-chico"><span class="logo-aula">AULA</span><span class="logo-net">net</span></p>
           <div class="acciones-barra">
             ${this.perfil.areas_coordinadas.length > 1 ? `<select id="selectArea" class="select-curso-barra">${opciones}</select>` : `<span class="curso-fijo">${escapeHtml(this.perfil.areas_coordinadas[0].area.nombre)}</span>`}
+            ${this.perfil.rol === 'administrador' ? `<button id="btnVolverAdmin" class="btn-icono" aria-label="Volver a administrador"><i class="ti ti-arrow-left" aria-hidden="true"></i></button>` : ''}
             <button id="btnCargarExcel" class="btn-icono" aria-label="Cargar observaciones"><i class="ti ti-upload" aria-hidden="true"></i></button>
             <button id="btnCerrarSesion" class="btn-icono" aria-label="Cerrar sesión"><i class="ti ti-logout" aria-hidden="true"></i></button>
             <div class="avatar-chico">${iniciales(this.perfil.nombre_completo)}</div>
@@ -63,6 +64,7 @@ const VistaDashboardCoordinadorArea = {
     document.getElementById('btnCerrarSesion').addEventListener('click', () => Auth.cerrarSesion());
     document.getElementById('btnCargarExcel').addEventListener('click', () => VistaCargaExcel.render(this.contenedor, this.perfil, this.areaActivaId));
     document.getElementById('btnCargarExcel2').addEventListener('click', () => VistaCargaExcel.render(this.contenedor, this.perfil, this.areaActivaId));
+    document.getElementById('btnVolverAdmin')?.addEventListener('click', () => VistaDashboardAdmin.render(this.contenedor, this.perfil));
 
     const select = document.getElementById('selectArea');
     if (select) {
