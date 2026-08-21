@@ -315,3 +315,74 @@ button { cursor: pointer; }
   border-radius: 10px;
   padding: 16px;
 }
+
+/* ---------- Ficha del estudiante ---------- */
+
+.bloque-observacion {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--borde);
+}
+.bloque-observacion:last-child { border-bottom: none; }
+.area-observacion { font-size: 12.5px; font-weight: 600; color: var(--navy); margin: 0 0 4px; }
+.texto-observacion { font-size: 13px; color: var(--texto-secundario); margin: 0; line-height: 1.5; }
+
+.fila-estudiante-lista {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--borde);
+  cursor: pointer;
+}
+.fila-estudiante-lista:last-child { border-bottom: none; }
+.fila-estudiante-lista:hover { background: var(--fondo); }
+
+/* ---------- Informe PDF imprimible ---------- */
+
+.hoja-informe { max-width: 720px; margin: 0 auto; padding: 20px 16px 60px; }
+
+.pagina-informe {
+  background: #fff;
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  padding: 26px 28px;
+}
+
+.encabezado-informe {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 2px solid var(--navy);
+  margin-bottom: 16px;
+}
+.logo-cafam-img {
+  height: 38px;
+  width: auto;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.titulo-informe { font-size: 16px; font-weight: 600; margin: 0; color: var(--navy); }
+.subtitulo-informe { font-size: 12px; color: var(--texto-secundario); margin: 2px 0 0; }
+
+.datos-informe {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 24px;
+  margin-bottom: 18px;
+}
+.label-informe { font-size: 11px; color: var(--texto-muted); text-transform: uppercase; letter-spacing: 0.03em; margin: 0; }
+.valor-informe { font-size: 14px; font-weight: 600; margin: 2px 0 0; }
+.valor-informe-normal { font-size: 14px; margin: 2px 0 0; }
+
+.fila-area-informe { padding: 12px 0; border-bottom: 1px solid var(--borde); }
+.nombre-area-informe { font-size: 12px; font-weight: 600; color: var(--navy); margin: 0 0 4px; }
+.texto-area-informe { font-size: 12.5px; line-height: 1.6; margin: 0; text-align: justify; }
+
+.pie-informe { padding-top: 12px; margin-top: 8px; border-top: 1px solid var(--borde); font-size: 10px; color: var(--texto-muted); }
+
+@media print {
+  .no-imprimir { display: none !important; }
+  .hoja-informe { padding: 0; max-width: none; }
+  .pagina-informe { border: none; border-radius: 0; padding: 0; }
+}
