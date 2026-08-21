@@ -20,12 +20,19 @@ const VistaDashboardAdmin = {
           <p class="logo-texto-chico"><span class="logo-aula">AULA</span><span class="logo-net">net</span></p>
           <div class="acciones-barra">
             <span class="curso-fijo">Administrador</span>
+            ${this.perfil.areas_coordinadas?.length ? `<button id="btnIrCoordinacion" class="btn-icono" aria-label="Mi coordinación de área"><i class="ti ti-upload" aria-hidden="true"></i></button>` : ''}
             <button id="btnCerrarSesion" class="btn-icono" aria-label="Cerrar sesión"><i class="ti ti-logout" aria-hidden="true"></i></button>
             <div class="avatar-chico">${iniciales(this.perfil.nombre_completo)}</div>
           </div>
         </header>
 
         <main class="contenido-principal">
+          ${this.perfil.areas_coordinadas?.length ? `
+            <div class="tarjeta-form" style="margin-bottom:20px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+              <p style="margin:0; font-size:13px;">También coordinas <strong>${this.perfil.areas_coordinadas.map(a => escapeHtml(a.area.nombre)).join(', ')}</strong></p>
+              <button id="btnIrCoordinacion2" class="btn-secundario btn-pequeno">Ir a cargar observaciones</button>
+            </div>` : ''}
+
           <p class="titulo-seccion">Docentes</p>
           <p class="subtitulo-seccion" id="infoDocentes">Cargando...</p>
 
@@ -54,6 +61,10 @@ const VistaDashboardAdmin = {
     document.getElementById('btnCerrarSesion').addEventListener('click', () => Auth.cerrarSesion());
     document.getElementById('buscarDocente').addEventListener('input', (ev) => this.filtrarDocentes(ev.target.value));
     document.getElementById('btnAgregarEst').addEventListener('click', () => this.agregarEstudiante());
+
+    const irCoordinacion = () => VistaDashboardCoordinadorArea.render(this.contenedor, this.perfil);
+    document.getElementById('btnIrCoordinacion')?.addEventListener('click', irCoordinacion);
+    document.getElementById('btnIrCoordinacion2')?.addEventListener('click', irCoordinacion);
   },
 
   async cargarDatos() {
